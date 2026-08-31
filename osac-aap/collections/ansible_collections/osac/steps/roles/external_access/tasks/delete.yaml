@@ -7,6 +7,7 @@
   loop:
     - "{{ external_access_name }}-api"
     - "{{ external_access_name }}-ingress"
+    - "{{ external_access_name }}-oauth"
 
 - name: Delete dns records
   when: >-
@@ -22,3 +23,4 @@
     - "api.{{ external_access_name }}.{{ external_access_base_domain }}"
     - "api-int.{{ external_access_name }}.{{ external_access_base_domain }}"
     - "*.apps.{{ external_access_name }}.{{ external_access_base_domain }}"
+    - "oauth.{{ external_access_name }}.{{ external_access_base_domain }}"

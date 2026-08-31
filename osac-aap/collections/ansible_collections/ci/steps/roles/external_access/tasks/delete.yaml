@@ -13,3 +13,4 @@
     - "api.{{ external_access_name }}.{{ external_access_base_domain }}"
     - "api-int.{{ external_access_name }}.{{ external_access_base_domain }}"
     - "*.apps.{{ external_access_name }}.{{ external_access_base_domain }}"
+    - "oauth.{{ external_access_name }}.{{ external_access_base_domain }}"

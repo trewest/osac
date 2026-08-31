@@ -3,6 +3,7 @@
     external_access_api_domain: "api.{{ external_access_name }}.{{ external_access_base_domain }}"
     external_access_api_int_domain: "api-int.{{ external_access_name }}.{{ external_access_base_domain }}"
     external_access_ingress_domain: "apps.{{ external_access_name }}.{{ external_access_base_domain }}"
+    external_access_oauth_domain: "oauth.{{ external_access_name }}.{{ external_access_base_domain }}"
 
 - name: Get kube-apiserver service
   kubernetes.core.k8s_info:
@@ -23,6 +24,24 @@
   ansible.builtin.set_fact:
     external_access_api_internal_ip: "{{ kube_apiserver_service.resources[0].status.loadBalancer.ingress[0].ip }}"
     external_access_kube_apiserver_port: "{{ kube_apiserver_service.resources[0].spec.ports[0].port }}"
+
+- name: Get oauth-openshift service
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ external_access_namespace }}-{{ external_access_name }}"
+    name: oauth-openshift
+  register: external_access_oauth_service
+  until: >-
+    (external_access_oauth_service.resources | length > 0) and
+    (external_access_oauth_service.resources[0].status.loadBalancer.ingress | default([]) | length > 0)
+  retries: "{{ external_access_resource_wait_retries }}"
+  delay: "{{ external_access_resource_wait_delay }}"
+
+- name: Set OAuth internal IP
+  ansible.builtin.set_fact:
+    external_access_oauth_internal_ip: "{{ external_access_oauth_service.resources[0].status.loadBalancer.ingress[0].ip }}"
+    external_access_oauth_port: "{{ external_access_oauth_service.resources[0].spec.ports[0].port }}"
 
 - name: Allocate api floating ip
   ansible.builtin.include_role:
@@ -66,6 +85,33 @@
   ansible.builtin.set_fact:
     external_access_ingress_floating_ip: "{{ allocate_floating_ip_result }}"
 
+- name: Allocate oauth floating ip
+  ansible.builtin.include_role:
+    name: osac.esi.floating_ip
+  vars:
+    floating_ip_state: present
+    floating_ip_name: "{{ external_access_name }}-oauth"  # noqa:var-naming[no-role-prefix]
+    floating_ip_properties:
+      instance: "{{ cluster_order.metadata.namespace }}"
+      clusterorder: "{{ external_access_name }}"
+      purpose: "o-sac"
+
+- name: Set external_access_oauth_floating_ip
+  ansible.builtin.set_fact:
+    external_access_oauth_floating_ip: "{{ allocate_floating_ip_result }}"
+
+- name: Create port forwarding for oauth endpoint  # noqa:no-changed-when
+  ansible.builtin.include_role:
+    name: osac.esi.floating_ip
+    tasks_from: create_port_forwarding
+  vars:
+    internal_ip: "{{ external_access_oauth_internal_ip }}"
+    floating_ip: "{{ external_access_oauth_floating_ip }}"
+    internal_network: "{{ external_access_api_internal_network }}"
+    ports:
+    - "{{ external_access_oauth_port }}"
+    description: "{{ external_access_name }}-oauth"
+
 - name: Create dns records
   when: >-
     external_access_base_domain in external_access_supported_base_domains|default([])
@@ -86,6 +132,8 @@
       addr: "{{ external_access_api_floating_ip }}"
     - name: "*.{{ external_access_ingress_domain }}"
       addr: "{{ external_access_ingress_floating_ip }}"
+    - name: "{{ external_access_oauth_domain }}"
+      addr: "{{ external_access_oauth_floating_ip }}"
 
 - name: Wait for DNS records
   when: >-
@@ -99,6 +147,7 @@
     - "{{ external_access_api_domain }}"
     - "{{ external_access_api_int_domain }}"
     - "default-router.{{ external_access_ingress_domain }}"
+    - "{{ external_access_oauth_domain }}"
 
 - name: Get managed cluster admin kubeconfig secret
   ansible.builtin.include_role:

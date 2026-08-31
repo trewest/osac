@@ -51,11 +51,16 @@
           {{ (external_access_ipam_state_raw.content | b64decode
           | from_json).public_ips[external_access_state_key + '-ingress'][0]
           | default('') }}
+        external_access_oauth_public_ip: >-
+          {{ (external_access_ipam_state_raw.content | b64decode
+          | from_json).public_ips[external_access_state_key + '-oauth'][0]
+          | default('') }}
   rescue:
     - name: Default to empty IPs on missing or corrupt state
       ansible.builtin.set_fact:
         external_access_api_public_ip: ""
         external_access_ingress_public_ip: ""
+        external_access_oauth_public_ip: ""
 
 - name: Skip cleanup if no public IPs allocated
   ansible.builtin.debug:
@@ -77,11 +82,21 @@
           {{ (external_access_ipam_state_raw.content | b64decode
           | from_json).dnat_state[external_access_state_key].api_port
           | default('') }}
+        external_access_oauth_internal_ip: >-
+          {{ (external_access_ipam_state_raw.content | b64decode
+          | from_json).dnat_state[external_access_state_key].oauth_internal_ip
+          | default('') }}
+        external_access_oauth_port: >-
+          {{ (external_access_ipam_state_raw.content | b64decode
+          | from_json).dnat_state[external_access_state_key].oauth_port
+          | default('') }}
   rescue:
-    - name: Default to empty API DNAT state
+    - name: Default to empty API and OAuth DNAT state
       ansible.builtin.set_fact:
         external_access_api_internal_ip: ""
         external_access_kube_apiserver_port: ""
+        external_access_oauth_internal_ip: ""
+        external_access_oauth_port: ""
 
 - name: Compute MetalLB ingress IP for DNAT delete
   ansible.builtin.set_fact:
@@ -129,6 +144,19 @@
       -e bgp_next_hop={{ external_access_bgp_next_hop }}
       {{ role_path }}/playbooks/bgp_withdraw.yaml
   when: external_access_ingress_public_ip | length > 0 and external_access_bgp_next_hop | default('') | length > 0
+
+- name: Withdraw OAuth PublicIP route  # noqa: no-changed-when
+  environment:
+    ANSIBLE_COLLECTIONS_PATH: "{{ agentless_net_collections_path }}"
+    ANSIBLE_ROLES_PATH: "{{ agentless_net_roles_path }}"
+  ansible.builtin.command:
+    cmd: >
+      ansible-playbook
+      -i {{ agentless_net_inventory_file }}
+      -e bgp_public_ip={{ external_access_oauth_public_ip }}
+      -e bgp_next_hop={{ external_access_bgp_next_hop }}
+      {{ role_path }}/playbooks/bgp_withdraw.yaml
+  when: external_access_oauth_public_ip | default('') | length > 0 and external_access_bgp_next_hop | default('') | length > 0
 
 # --- agentless_net: delete DNAT rules ---
 
@@ -183,6 +211,23 @@
       {{ role_path }}/playbooks/l3_delete_dnat.yaml
   when: external_access_ingress_public_ip | length > 0 and external_access_metallb_ingress_ip is defined
 
+- name: Delete DNAT for OAuth endpoint  # noqa: no-changed-when
+  environment:
+    ANSIBLE_COLLECTIONS_PATH: "{{ agentless_net_collections_path }}"
+    ANSIBLE_ROLES_PATH: "{{ agentless_net_roles_path }}"
+  ansible.builtin.command:
+    cmd: >
+      ansible-playbook
+      -i {{ agentless_net_inventory_file }}
+      -e dnat_router_name={{ external_access_name }}
+      -e dnat_public_ip={{ external_access_oauth_public_ip }}
+      -e dnat_public_port={{ external_access_oauth_port }}
+      -e dnat_internal_ip={{ external_access_oauth_internal_ip }}
+      -e dnat_internal_port={{ external_access_oauth_port }}
+      -e dnat_protocol=tcp
+      {{ role_path }}/playbooks/l3_delete_dnat.yaml
+  when: external_access_oauth_public_ip | default('') | length > 0 and external_access_oauth_internal_ip | default('') | length > 0
+
 # --- Delete DNS records ---
 
 - name: Delete DNS records
@@ -199,6 +244,7 @@
     - "api.{{ external_access_name }}.{{ external_access_base_domain }}"
     - "api-int.{{ external_access_name }}.{{ external_access_base_domain }}"
     - "*.apps.{{ external_access_name }}.{{ external_access_base_domain }}"
+    - "oauth.{{ external_access_name }}.{{ external_access_base_domain }}"
 
 # --- agentless_net: release public IPs ---
 
@@ -224,6 +270,18 @@
       -i {{ agentless_net_inventory_file }}
       -e ipam_state_file={{ agentless_net_net_node_ipam_state_file }}
       -e ipam_purpose={{ external_access_state_key }}-ingress
+      {{ role_path }}/playbooks/ipam_release_ip.yaml
+
+- name: Release OAuth public IP  # noqa: no-changed-when
+  environment:
+    ANSIBLE_COLLECTIONS_PATH: "{{ agentless_net_collections_path }}"
+    ANSIBLE_ROLES_PATH: "{{ agentless_net_roles_path }}"
+  ansible.builtin.command:
+    cmd: >
+      ansible-playbook
+      -i {{ agentless_net_inventory_file }}
+      -e ipam_state_file={{ agentless_net_net_node_ipam_state_file }}
+      -e ipam_purpose={{ external_access_state_key }}-oauth
       {{ role_path }}/playbooks/ipam_release_ip.yaml
 
 # --- Clean up DNAT state ---

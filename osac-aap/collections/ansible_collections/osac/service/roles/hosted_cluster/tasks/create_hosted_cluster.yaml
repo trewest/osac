@@ -62,7 +62,9 @@
                 hostname: "api.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}"
           - service: OAuthServer
             servicePublishingStrategy:
-              type: Route
+              type: LoadBalancer
+              loadBalancer:
+                hostname: "oauth.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}"
           - service: OIDC
             servicePublishingStrategy:
               type: Route
