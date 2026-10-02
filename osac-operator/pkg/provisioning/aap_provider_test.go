@@ -273,6 +273,36 @@ var _ = Describe("AAPProvider", func() {
 		})
 	})
 
+	Describe("TriggerProvision for add-on operators", func() {
+		It("launches the dedicated template with the operator and admin kubeconfig", func() {
+			provider = provisioning.NewAAPProvider(aapClient, "osac-install-addon-operator", "")
+			ctx = provisioning.WithAdminKubeconfig(ctx, "apiVersion: v1\nclusters: []\n")
+			ctx = provisioning.WithAddOnOperatorName(ctx, "cert-manager")
+			aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
+				Expect(templateName).To(Equal("osac-install-addon-operator"))
+				return &aap.Template{ID: 7, Name: templateName, Type: aap.TemplateTypeJob}, nil
+			}
+			aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+				Expect(req.TemplateName).To(Equal("osac-install-addon-operator"))
+				jobVars := req.ExtraVars["osac_job_vars"].(map[string]any)
+				Expect(jobVars).To(HaveKeyWithValue("addon_operator_name", "cert_manager"))
+				Expect(jobVars).To(HaveKeyWithValue("admin_kubeconfig", "apiVersion: v1\nclusters: []\n"))
+				resource := jobVars["resource"].(map[string]any)
+				Expect(resource["metadata"].(map[string]any)).To(HaveKeyWithValue("name", "test-order"))
+				return &aap.LaunchJobTemplateResponse{JobID: 707}, nil
+			}
+
+			order := &v1alpha1.ClusterOrder{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-order", Namespace: "default"},
+			}
+			result, err := provider.TriggerProvision(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.JobID).To(Equal("707"))
+			Expect(result.InitialState).To(Equal(v1alpha1.JobStatePending))
+			Expect(result.Message).To(Equal("Provisioning job triggered"))
+		})
+	})
+
 	Describe("GetProvisionStatus", func() {
 		BeforeEach(func() {
 			provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")

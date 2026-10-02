@@ -11,7 +11,7 @@
     - name: Set add-on operator job variables
       ansible.builtin.set_fact:
         osac_job_vars:
-          name: cert_manager
+          addon_operator_name: cert_manager
           admin_kubeconfig: >-
             {{ lookup('file', lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') + '/.kube/config', true)) }}
           resource: "{{ addon_operator_resource }}"
@@ -28,7 +28,7 @@
     failure_cases:
       - name: unknown_operator_role
         extra_vars:
-          name: missing_addon_operator
+          addon_operator_name: missing_addon_operator
           admin_kubeconfig: |
             apiVersion: v1
             kind: Config
@@ -39,7 +39,7 @@
         extra_vars:
           osac_job_vars:
             resource: "{{ lookup('file', '../../../fixtures/clusterorder-test.yaml') | from_yaml }}"
-        expected_error: "name, osac_job_vars.resource, and admin_kubeconfig are required"
+        expected_error: "addon_operator_name, osac_job_vars.resource, and admin_kubeconfig are required"
 
   tasks:
     - name: Read operator namespace
@@ -61,7 +61,7 @@
       ansible.builtin.assert:
         that:
           - osac_job_vars.resource.metadata.name == "test-cluster"
-          - osac_job_vars.name == "cert_manager"
+          - osac_job_vars.addon_operator_name == "cert_manager"
           - osac_job_vars.admin_kubeconfig | length > 0
           - addon_operator_namespace.resources | length == 1
           - addon_operator_subscription.resources | length == 1

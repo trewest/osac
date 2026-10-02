@@ -27,6 +27,7 @@ import (
 	. "github.com/onsi/gomega"    //nolint:revive,staticcheck
 
 	"github.com/osac-project/osac/osac-operator/internal/controller"
+	"github.com/osac-project/osac/osac-operator/pkg/provisioning"
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -176,6 +177,22 @@ var _ = Describe("tenant CSI fulfillment configuration", func() {
 		endpoint, issuerURL := fulfillmentConfigFromEnv()
 		Expect(endpoint).To(Equal("fulfillment-api.example.com:443"))
 		Expect(issuerURL).To(Equal("https://keycloak.example.com/realms/osac"))
+	})
+})
+
+var _ = Describe("setupProvisioningController", func() {
+	It("passes the provisioning provider to reconciler setup", func() {
+		var received provisioning.ProvisioningProvider
+		err := setupProvisioningController(
+			"", "",
+			func() error { return nil },
+			func(provider provisioning.ProvisioningProvider, _ time.Duration) error {
+				received = provider
+				return nil
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(received).NotTo(BeNil())
 	})
 })
 

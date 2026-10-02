@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/stoewer/go-strcase"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -237,14 +238,17 @@ func (p *AAPProvider) launchDeprovisionJob(ctx context.Context, resource client.
 
 // launchTemplate launches the named template (job or workflow) and returns the job ID.
 func (p *AAPProvider) launchTemplate(ctx context.Context, templateName string, resource client.Object) (string, error) {
-	template, err := p.client.GetTemplate(ctx, templateName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get template: %w", err)
-	}
-
 	extraVars, err := p.extractExtraVars(ctx, resource)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract extra vars: %w", err)
+	}
+	return p.launchTemplateWithExtraVars(ctx, templateName, extraVars)
+}
+
+func (p *AAPProvider) launchTemplateWithExtraVars(ctx context.Context, templateName string, extraVars map[string]any) (string, error) {
+	template, err := p.client.GetTemplate(ctx, templateName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get template: %w", err)
 	}
 
 	var jobID int
@@ -371,6 +375,9 @@ func extractExtraVars(ctx context.Context, resource client.Object) (map[string]a
 
 	if kc := AdminKubeconfigFromContext(ctx); kc != "" {
 		vars["admin_kubeconfig"] = kc
+	}
+	if name := AddOnOperatorNameFromContext(ctx); name != "" {
+		vars["addon_operator_name"] = strings.ReplaceAll(name, "-", "_")
 	}
 
 	if tiers := StorageTierDefinitionsFromContext(ctx); len(tiers) > 0 {

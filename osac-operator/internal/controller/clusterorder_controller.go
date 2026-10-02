@@ -338,6 +338,9 @@ func (r *ClusterOrderReconciler) patchStatusWithRetry(ctx context.Context, key c
 		latest.Status.IngressEndpoint = computed.IngressEndpoint
 		latest.Status.Workers = computed.Workers
 		for _, c := range computed.Conditions {
+			if c.Type == string(v1alpha1.ClusterOrderConditionAddOnOperatorsReady) {
+				continue
+			}
 			apimeta.SetStatusCondition(&latest.Status.Conditions, c)
 		}
 		if equality.Semantic.DeepEqual(base.Status, latest.Status) {

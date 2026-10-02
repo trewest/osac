@@ -234,6 +234,12 @@ var clusterOrderProvisioningStages = []string{
 	string(ckv1alpha1.ClusterOrderConditionClusterStorageReady),
 }
 
+// clusterOrderDegradedConditionSources are conditions that contribute to the
+// fulfillment DEGRADED condition without becoming standalone conditions.
+var clusterOrderDegradedConditionSources = map[string]struct{}{
+	string(ckv1alpha1.ClusterOrderConditionAddOnOperatorsReady): {},
+}
+
 // clusterOrderUnsurfacedConditions are ClusterOrder conditions we know about but neither
 // copy to the fulfillment API nor use to refine PROGRESSING. They are listed so they are
 // not reported as unknown:
@@ -241,9 +247,8 @@ var clusterOrderProvisioningStages = []string{
 //   - Deleting is reported through the DELETING state (see syncClusterOrderPhase and
 //     syncClusterOrderDelete), not as a condition.
 var clusterOrderUnsurfacedConditions = map[string]struct{}{
-	ckv1alpha1.ConditionNamespaceCreated:                        {},
-	ckv1alpha1.ConditionDeleting:                                {},
-	string(ckv1alpha1.ClusterOrderConditionAddOnOperatorsReady): {},
+	ckv1alpha1.ConditionNamespaceCreated: {},
+	ckv1alpha1.ConditionDeleting:         {},
 }
 
 func syncClusterOrderConditions(ctx context.Context, clusterOrder *ckv1alpha1.ClusterOrder, remote *privatev1.Cluster) {
@@ -261,6 +266,10 @@ func syncClusterOrderConditions(ctx context.Context, clusterOrder *ckv1alpha1.Cl
 			// fulfillment condition.
 			continue
 		}
+		if _, ok := clusterOrderDegradedConditionSources[condition.Type]; ok {
+			syncClusterOrderAddOnDegraded(remote, condition)
+			continue
+		}
 		if _, ok := clusterOrderUnsurfacedConditions[condition.Type]; ok {
 			continue
 		}
@@ -270,6 +279,40 @@ func syncClusterOrderConditions(ctx context.Context, clusterOrder *ckv1alpha1.Cl
 	}
 
 	applyProgressingStageDetail(clusterOrder, remote)
+}
+
+func syncClusterOrderAddOnDegraded(remote *privatev1.Cluster, condition metav1.Condition) {
+	if condition.Status == metav1.ConditionTrue {
+		var degraded *privatev1.ClusterCondition
+		for _, current := range remote.GetStatus().GetConditions() {
+			if current.GetType() == privatev1.ClusterConditionType_CLUSTER_CONDITION_TYPE_DEGRADED {
+				degraded = current
+				break
+			}
+		}
+		if degraded == nil || degraded.GetStatus() != privatev1.ConditionStatus_CONDITION_STATUS_TRUE || degraded.GetReason() != addOnOperatorsFailedReason {
+			return
+		}
+		degraded.SetStatus(privatev1.ConditionStatus_CONDITION_STATUS_FALSE)
+		degraded.SetReason("AddOnOperatorsRecovered")
+		degraded.SetMessage("")
+		degraded.SetLastTransitionTime(timestamppb.Now())
+		return
+	}
+	if condition.Status != metav1.ConditionFalse {
+		return
+	}
+	degraded := findClusterCondition(remote, privatev1.ClusterConditionType_CLUSTER_CONDITION_TYPE_DEGRADED)
+	if degraded.GetStatus() == privatev1.ConditionStatus_CONDITION_STATUS_TRUE && degraded.GetReason() != addOnOperatorsFailedReason {
+		return
+	}
+	oldStatus := degraded.GetStatus()
+	degraded.SetStatus(privatev1.ConditionStatus_CONDITION_STATUS_TRUE)
+	degraded.SetReason(addOnOperatorsFailedReason)
+	degraded.SetMessage(sanitizeFeedbackText(condition.Message))
+	if oldStatus != degraded.GetStatus() {
+		degraded.SetLastTransitionTime(timestamppb.Now())
+	}
 }
 
 // applyProgressingStageDetail refines the PROGRESSING condition's reason and message to
