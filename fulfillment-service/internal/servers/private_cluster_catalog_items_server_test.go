@@ -1089,6 +1089,43 @@ var _ = Describe("Private cluster catalog items server", func() {
 			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
 		})
 
+		It("Rejects shared add-on operators outside the default project", func() {
+			projectName := "operator-project-" + uuid.New()[24:32]
+			projectsDAO, err := dao.NewGenericDAO[*privatev1.Project]().
+				SetLogger(logger).
+				SetTenancyLogic(tenancy).
+				Build()
+			Expect(err).ToNot(HaveOccurred())
+			_, err = projectsDAO.Create().SetObject(privatev1.Project_builder{
+				Metadata: privatev1.Metadata_builder{Name: projectName, Tenant: auth.SharedTenant}.Build(),
+			}.Build()).Do(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			operatorID := "project-operator-" + uuid.New()[24:32]
+			operatorName := "project-operator-" + uuid.New()[24:32]
+			operator := newTestAddOnOperator(operatorID, operatorName, true)
+			operator.GetMetadata().SetProject(projectName)
+			seedAddOnOperatorObject(ctx, operator)
+
+			_, err = server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+				Object: privatev1.ClusterCatalogItem_builder{
+					Metadata: privatev1.Metadata_builder{Name: "catalog-item-" + uuid.New()[24:32], Tenant: testTenant}.Build(),
+					Title:    "Catalog item with a project-scoped shared operator",
+					Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+					Fields: privatev1.ClusterCatalogItemFields_builder{
+						AddOnOperators: privatev1.AddOnOperatorReferenceListFieldPolicy_builder{
+							Locked: privatev1.AddOnOperatorReferenceList_builder{
+								Items: []*privatev1.AddOnOperatorReference{
+									privatev1.AddOnOperatorReference_builder{Id: operatorID, Project: projectName, Shared: true}.Build(),
+								},
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+		})
+
 		It("Rejects operator names incompatible with ClusterOrder", func() {
 			operatorID := "numeric-operator-" + uuid.New()[24:32]
 			operatorName := "1catalog-operator"

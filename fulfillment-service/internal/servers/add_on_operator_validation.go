@@ -121,7 +121,7 @@ func getPublishedSharedAddOnOperator(
 	if err != nil {
 		return nil, err
 	}
-	if operator.GetMetadata().GetTenant() != auth.SharedTenant || !operator.GetPublished() || operator.GetMetadata().GetDeletionTimestamp() != nil {
+	if operator.GetMetadata().GetTenant() != auth.SharedTenant || operator.GetMetadata().GetProject() != "" || !operator.GetPublished() || operator.GetMetadata().GetDeletionTimestamp() != nil {
 		return nil, &dao.ErrNotFound{IDs: []string{id}}
 	}
 	return operator, nil
