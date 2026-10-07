@@ -948,6 +948,170 @@ var _ = Describe("Private cluster catalog items server", func() {
 			Expect(status.Code()).To(Equal(grpccodes.InvalidArgument))
 			Expect(status.Message()).To(ContainSubstring("metadata.name"))
 		})
+
+		It("Canonicalizes published shared add-on operator references", func() {
+			operatorID := "catalog-operator-" + uuid.New()[24:32]
+			operatorName := "catalog-operator-" + uuid.New()[24:32]
+			seedAddOnOperator(ctx, operatorID, operatorName, true)
+
+			response, err := server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+				Object: privatev1.ClusterCatalogItem_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name:   "catalog-item-" + uuid.New()[24:32],
+						Tenant: testTenant,
+					}.Build(),
+					Title:    "Catalog item with an operator",
+					Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+					Fields: privatev1.ClusterCatalogItemFields_builder{
+						AddOnOperators: privatev1.AddOnOperatorReferenceListFieldPolicy_builder{
+							Locked: privatev1.AddOnOperatorReferenceList_builder{
+								Items: []*privatev1.AddOnOperatorReference{
+									privatev1.AddOnOperatorReference_builder{Name: operatorName}.Build(),
+								},
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() {
+				_, cleanupErr := server.Delete(ctx, privatev1.ClusterCatalogItemsDeleteRequest_builder{Id: response.GetObject().GetId()}.Build())
+				Expect(cleanupErr).ToNot(HaveOccurred())
+			})
+
+			operatorReference := response.GetObject().GetFields().GetAddOnOperators().GetLocked().GetItems()[0]
+			Expect(operatorReference.GetId()).To(Equal(operatorID))
+			Expect(operatorReference.GetName()).To(Equal(operatorName))
+		})
+
+		It("Validates add-on operator references on update", func() {
+			validID := "update-operator-" + uuid.New()[24:32]
+			validName := "update-operator-" + uuid.New()[24:32]
+			invalidID := "update-unpublished-" + uuid.New()[24:32]
+			seedAddOnOperator(ctx, validID, validName, true)
+			seedAddOnOperator(ctx, invalidID, "update-unpublished", false)
+
+			createResponse, err := server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+				Object: privatev1.ClusterCatalogItem_builder{
+					Metadata: privatev1.Metadata_builder{Name: "catalog-item-update-" + uuid.New()[24:32], Tenant: testTenant}.Build(),
+					Title:    "Catalog item updated with an operator",
+					Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			object := createResponse.GetObject()
+			DeferCleanup(func() {
+				_, cleanupErr := server.Delete(ctx, privatev1.ClusterCatalogItemsDeleteRequest_builder{Id: object.GetId()}.Build())
+				Expect(cleanupErr).ToNot(HaveOccurred())
+			})
+
+			updateRequest := func(operatorID string) *privatev1.ClusterCatalogItemsUpdateRequest {
+				return privatev1.ClusterCatalogItemsUpdateRequest_builder{
+					Object: privatev1.ClusterCatalogItem_builder{
+						Id:       object.GetId(),
+						Metadata: privatev1.Metadata_builder{Name: object.GetMetadata().GetName(), Tenant: testTenant}.Build(),
+						Title:    "Catalog item updated with an operator",
+						Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+						Fields: privatev1.ClusterCatalogItemFields_builder{
+							AddOnOperators: privatev1.AddOnOperatorReferenceListFieldPolicy_builder{
+								Locked: privatev1.AddOnOperatorReferenceList_builder{
+									Items: []*privatev1.AddOnOperatorReference{privatev1.AddOnOperatorReference_builder{Id: operatorID}.Build()},
+								}.Build(),
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build()
+			}
+
+			updateResponse, err := server.Update(ctx, updateRequest(validID))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updateResponse.GetObject().GetFields().GetAddOnOperators().GetLocked().GetItems()[0].GetId()).To(Equal(validID))
+
+			_, err = server.Update(ctx, updateRequest(invalidID))
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			getResponse, getErr := server.Get(ctx, privatev1.ClusterCatalogItemsGetRequest_builder{Id: object.GetId()}.Build())
+			Expect(getErr).ToNot(HaveOccurred())
+			Expect(getResponse.GetObject().GetFields().GetAddOnOperators().GetLocked().GetItems()[0].GetId()).To(Equal(validID))
+		})
+
+		It("Rejects unpublished shared add-on operator references", func() {
+			operatorID := "unpublished-operator-" + uuid.New()[24:32]
+			operatorName := "unpublished-operator-" + uuid.New()[24:32]
+			seedAddOnOperator(ctx, operatorID, operatorName, false)
+
+			_, err := server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+				Object: privatev1.ClusterCatalogItem_builder{
+					Metadata: privatev1.Metadata_builder{
+						Name:   "catalog-item-" + uuid.New()[24:32],
+						Tenant: testTenant,
+					}.Build(),
+					Title:    "Catalog item with an unpublished operator",
+					Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+					Fields: privatev1.ClusterCatalogItemFields_builder{
+						AddOnOperators: privatev1.AddOnOperatorReferenceListFieldPolicy_builder{
+							Locked: privatev1.AddOnOperatorReferenceList_builder{
+								Items: []*privatev1.AddOnOperatorReference{
+									privatev1.AddOnOperatorReference_builder{Id: operatorID}.Build(),
+								},
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(err).To(HaveOccurred())
+			status, ok := grpcstatus.FromError(err)
+			Expect(ok).To(BeTrue())
+			Expect(status.Code()).To(Equal(grpccodes.InvalidArgument))
+			Expect(status.Message()).To(ContainSubstring("add-on operator"))
+		})
+
+		It("Rejects non-shared add-on operator references", func() {
+			operatorID := "tenant-operator-" + uuid.New()[24:32]
+			operatorName := "tenant-operator-" + uuid.New()[24:32]
+			operator := newTestAddOnOperator(operatorID, operatorName, true)
+			operator.GetMetadata().SetTenant(testTenant)
+			seedAddOnOperatorObject(ctx, operator)
+
+			_, err := server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+				Object: privatev1.ClusterCatalogItem_builder{
+					Metadata: privatev1.Metadata_builder{Name: "catalog-item-" + uuid.New()[24:32], Tenant: testTenant}.Build(),
+					Title:    "Catalog item with a tenant operator",
+					Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+					Fields: privatev1.ClusterCatalogItemFields_builder{
+						AddOnOperators: privatev1.AddOnOperatorReferenceListFieldPolicy_builder{
+							Locked: privatev1.AddOnOperatorReferenceList_builder{
+								Items: []*privatev1.AddOnOperatorReference{privatev1.AddOnOperatorReference_builder{Id: operatorID}.Build()},
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+		})
+
+		It("Rejects operator names incompatible with ClusterOrder", func() {
+			operatorID := "numeric-operator-" + uuid.New()[24:32]
+			operatorName := "1catalog-operator"
+			seedAddOnOperator(ctx, operatorID, operatorName, true)
+
+			_, err := server.Create(ctx, privatev1.ClusterCatalogItemsCreateRequest_builder{
+				Object: privatev1.ClusterCatalogItem_builder{
+					Metadata: privatev1.Metadata_builder{Name: "catalog-item-" + uuid.New()[24:32], Tenant: testTenant}.Build(),
+					Title:    "Catalog item with an incompatible operator name",
+					Template: privatev1.ClusterTemplateReference_builder{Id: "my-template-id"}.Build(),
+					Fields: privatev1.ClusterCatalogItemFields_builder{
+						AddOnOperators: privatev1.AddOnOperatorReferenceListFieldPolicy_builder{
+							Locked: privatev1.AddOnOperatorReferenceList_builder{
+								Items: []*privatev1.AddOnOperatorReference{privatev1.AddOnOperatorReference_builder{Id: operatorID}.Build()},
+							}.Build(),
+						}.Build(),
+					}.Build(),
+				}.Build(),
+			}.Build())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			Expect(grpcstatus.Convert(err).Message()).To(ContainSubstring("valid for a ClusterOrder"))
+		})
+
 	})
 })
 

@@ -16,6 +16,7 @@ package servers
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -23,6 +24,8 @@ import (
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
+
+var addOnOperatorClusterOrderNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 // validateAndCanonicalizeClusterCatalogItemPolicies checks the locked values and editable defaults
 // of the Cluster Catalog Item being saved. It resolves version, secret, network, and bare metal instance type
@@ -37,6 +40,7 @@ func validateAndCanonicalizeClusterCatalogItemPolicies(
 	secretsDao *dao.GenericDAO[*privatev1.Secret],
 	subnetsDao *dao.GenericDAO[*privatev1.Subnet],
 	securityGroupsDao *dao.GenericDAO[*privatev1.SecurityGroup],
+	addOnOperatorsDao *dao.GenericDAO[*privatev1.AddOnOperator],
 ) error {
 	if item == nil {
 		return grpcstatus.Errorf(grpccodes.InvalidArgument, "catalog item is mandatory")
@@ -64,6 +68,10 @@ func validateAndCanonicalizeClusterCatalogItemPolicies(
 	}
 
 	if err := validateClusterCatalogItemNetworkAttachmentPolicy(ctx, scope, fields.GetNetworkAttachment(), subnetsDao, securityGroupsDao); err != nil {
+		return err
+	}
+
+	if err := validateClusterCatalogItemAddOnOperatorPolicy(ctx, item, fields.GetAddOnOperators(), addOnOperatorsDao); err != nil {
 		return err
 	}
 	return validateClusterCatalogItemNodeSetPolicy(ctx, item, instanceTypesDao)
@@ -96,7 +104,65 @@ func applyClusterCatalogItemPolicies(spec *privatev1.ClusterSpec, fields *privat
 	if err := applyPolicy(fields.GetNodeSets(), len(spec.GetNodeSets()) > 0, spec.SetNodeSets, decodeClusterNodeSetMapPolicy, cloneClusterNodeSets); err != nil {
 		return fmt.Errorf("node_sets: %w", err)
 	}
+	if err := applyPolicy(fields.GetAddOnOperators(), len(spec.GetAddOnOperators()) > 0, func(value *privatev1.AddOnOperatorReferenceList) {
+		spec.SetAddOnOperators(value.GetItems())
+	}, decodeAddOnOperatorReferenceListPolicy, cloneMessage[*privatev1.AddOnOperatorReferenceList]); err != nil {
+		return fmt.Errorf("add_on_operators: %w", err)
+	}
 	return applyClusterCatalogItemNetworkPolicies(spec, fields.GetNetwork())
+}
+
+// validateClusterCatalogItemAddOnOperatorPolicy resolves both governed policy branches against
+// the published shared operator catalog and stores canonical references in the detached item.
+func validateClusterCatalogItemAddOnOperatorPolicy(
+	ctx context.Context,
+	item *privatev1.ClusterCatalogItem,
+	policy *privatev1.AddOnOperatorReferenceListFieldPolicy,
+	operatorsDao *dao.GenericDAO[*privatev1.AddOnOperator],
+) error {
+	if policy == nil {
+		return nil
+	}
+	state, err := decodeAddOnOperatorReferenceListPolicy(policy)
+	if err != nil {
+		return catalogItemPolicyError("fields.add_on_operators", err.Error())
+	}
+	resolver := &addOnOperatorReferenceResolver{
+		resource: newPublishedScopedAddOnOperatorResourceResolver(operatorsDao),
+		cache:    make(map[addOnOperatorReferenceCacheKey]*privatev1.AddOnOperator),
+	}
+	resolveList := func(list *privatev1.AddOnOperatorReferenceList, field string) error {
+		if list == nil {
+			return nil
+		}
+		for index, ref := range list.GetItems() {
+			if ref == nil {
+				return catalogItemPolicyError(fmt.Sprintf("%s.items[%d]", field, index), "reference must not be null")
+			}
+			itemField := fmt.Sprintf("%s.items[%d]", field, index)
+			ref.SetShared(true)
+			resolved, err := resolver.resolve(ctx, ref, item.GetMetadata(), itemField)
+			if err != nil {
+				return err
+			}
+			if !addOnOperatorClusterOrderNamePattern.MatchString(resolved.GetMetadata().GetName()) {
+				return catalogItemPolicyError(itemField, fmt.Sprintf("add-on operator name '%s' is not valid for a ClusterOrder", resolved.GetMetadata().GetName()))
+			}
+			canonicalizeResourceReference(ref, resolved)
+		}
+		return nil
+	}
+	if state.hasLocked {
+		if err := resolveList(state.lockedValue, "fields.add_on_operators.locked"); err != nil {
+			return err
+		}
+	}
+	if state.hasDefault {
+		if err := resolveList(state.defaultValue, "fields.add_on_operators.editable.default_value"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyClusterCatalogItemNetworkPolicies applies pod and service CIDR policies to a detached spec.

@@ -23,6 +23,7 @@ import (
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
+	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
@@ -107,20 +108,20 @@ func newPublishedScopedAddOnOperatorResourceResolver(
 ) *addOnOperatorResourceResolver {
 	return &addOnOperatorResourceResolver{
 		dao: operatorDAO,
-		get: getPublishedAddOnOperator,
+		get: getPublishedSharedAddOnOperator,
 	}
 }
 
-func getPublishedAddOnOperator(
+func getPublishedSharedAddOnOperator(
 	ctx context.Context,
 	operatorDAO *dao.GenericDAO[*privatev1.AddOnOperator],
 	id string,
 ) (*privatev1.AddOnOperator, error) {
-	operator, err := getReferenceResource(ctx, operatorDAO, id)
+	operator, err := getLockedReferenceResource(ctx, operatorDAO, id)
 	if err != nil {
 		return nil, err
 	}
-	if !operator.GetPublished() || operator.GetMetadata().GetDeletionTimestamp() != nil {
+	if operator.GetMetadata().GetTenant() != auth.SharedTenant || !operator.GetPublished() || operator.GetMetadata().GetDeletionTimestamp() != nil {
 		return nil, &dao.ErrNotFound{IDs: []string{id}}
 	}
 	return operator, nil
@@ -208,6 +209,10 @@ func (s *PrivateClustersServer) validateAndExpandAddOnOperators(
 	resolvedReferences := make([]*privatev1.AddOnOperatorReference, 0, len(selectedOrder))
 	for _, operatorID := range selectedOrder {
 		operator := selected[operatorID]
+		if !addOnOperatorClusterOrderNamePattern.MatchString(operator.GetMetadata().GetName()) {
+			return grpcstatus.Errorf(grpccodes.InvalidArgument,
+				"add-on operator name '%s' is not valid for a ClusterOrder", operator.GetMetadata().GetName())
+		}
 		ref := privatev1.AddOnOperatorReference_builder{
 			Id:   operator.GetId(),
 			Name: operator.GetMetadata().GetName(),
