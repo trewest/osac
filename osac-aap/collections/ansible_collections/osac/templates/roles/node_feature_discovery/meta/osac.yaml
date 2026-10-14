@@ -1,0 +1,16 @@
+---
+name: node-feature-discovery
+title: Node Feature Discovery Operator
+description: >
+  Installs the Node Feature Discovery Operator.
+template_type: addon_operator
+min_ocp_version: ""
+max_ocp_version: ""
+exclusions: []
+dependencies: []
+package_name: nfd
+channel: stable
+catalog_source: redhat-operators
+catalog_source_namespace: openshift-marketplace
+subscription_namespace: openshift-nfd
+operator_group_name: nfd

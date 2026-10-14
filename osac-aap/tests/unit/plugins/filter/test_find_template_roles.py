@@ -291,6 +291,106 @@ class TestTypeMappingCompleteness:
 class TestMetadataTemplateTypes:
 
     @pytest.mark.parametrize(
+        ("role_name", "expected_dependencies"),
+        [
+            ("openshift_ai", []),
+            ("amd_gpu", ["node_feature_discovery", "kmm"]),
+            ("nvidia_gpu", ["node_feature_discovery"]),
+            ("odf", ["lso"]),
+            ("authorino", []),
+            ("pipelines", []),
+            ("serverless", []),
+            ("servicemesh", []),
+            ("node_feature_discovery", []),
+            ("kmm", []),
+            ("lso", []),
+        ],
+    )
+    def test_open_shift_ai_operator_dependency_metadata(
+        self, roles_dir, role_name, expected_dependencies
+    ):
+        metadata = _load_metadata(roles_dir, role_name)
+        assert metadata.template_type == TemplateTypeEnum.addon_operator
+        assert metadata.dependencies == expected_dependencies
+
+    @pytest.mark.parametrize(
+        ("role_name", "expected_namespace"),
+        [
+            ("openshift_ai", "redhat-ods-operator"),
+            ("amd_gpu", "openshift-amd-gpu"),
+            ("authorino", "openshift-operators"),
+            ("nvidia_gpu", "nvidia-gpu-operator"),
+            ("odf", "openshift-storage"),
+            ("pipelines", "openshift-operators"),
+            ("serverless", "openshift-serverless"),
+            ("servicemesh", "openshift-operators"),
+            ("node_feature_discovery", "openshift-nfd"),
+            ("kmm", "openshift-kmm"),
+            ("lso", "openshift-local-storage"),
+        ],
+    )
+    def test_addon_operator_subscription_namespace(
+        self, roles_dir, role_name, expected_namespace
+    ):
+        metadata = _load_metadata(roles_dir, role_name)
+        with (roles_dir / role_name / "meta" / "osac.yaml").open(
+            "r", encoding="utf-8"
+        ) as metadata_file:
+            raw_metadata = yaml.safe_load(metadata_file)
+
+        assert metadata.template_type == TemplateTypeEnum.addon_operator
+        assert raw_metadata["subscription_namespace"] == expected_namespace
+
+    @pytest.mark.parametrize(
+        ("role_name", "expected_package", "expected_channel", "expected_catalog"),
+        [
+            ("openshift_ai", "rhods-operator", "stable", "redhat-operators"),
+            ("amd_gpu", "amd-gpu-operator", "alpha", "certified-operators"),
+            ("authorino", "authorino-operator", "tech-preview-v1", "redhat-operators"),
+            ("nvidia_gpu", "gpu-operator-certified", "stable", "certified-operators"),
+            ("odf", "odf-operator", "stable", "redhat-operators"),
+            ("pipelines", "openshift-pipelines-operator-rh", "latest", "redhat-operators"),
+            ("serverless", "serverless-operator", "stable", "redhat-operators"),
+            ("servicemesh", "servicemeshoperator", "stable", "redhat-operators"),
+            ("node_feature_discovery", "nfd", "stable", "redhat-operators"),
+            ("kmm", "kernel-module-management", "stable", "redhat-operators"),
+            ("lso", "local-storage-operator", "stable", "redhat-operators"),
+        ],
+    )
+    def test_addon_operator_olm_metadata(
+        self, roles_dir, role_name, expected_package, expected_channel, expected_catalog
+    ):
+        metadata = _load_metadata(roles_dir, role_name)
+
+        assert metadata.package_name == expected_package
+        assert metadata.channel == expected_channel
+        assert metadata.catalog_source == expected_catalog
+        assert metadata.catalog_source_namespace == "openshift-marketplace"
+
+    @pytest.mark.parametrize(
+        ("role_name", "expected_operator_group"),
+        [
+            ("openshift_ai", "rhods-operator"),
+            ("amd_gpu", "amd-gpu-operator"),
+            ("nvidia_gpu", "gpu-operator-certified"),
+            ("odf", "openshift-storage-operatorgroup"),
+            ("kmm", "kernel-module-management"),
+            ("node_feature_discovery", "nfd"),
+            ("serverless", "serverless-operator"),
+            ("lso", "local-storage"),
+        ],
+    )
+    def test_addon_operator_operator_group_metadata(
+        self, roles_dir, role_name, expected_operator_group
+    ):
+        with (roles_dir / role_name / "meta" / "osac.yaml").open(
+            "r", encoding="utf-8"
+        ) as metadata_file:
+            raw_metadata = yaml.safe_load(metadata_file)
+
+        assert raw_metadata["operator_group_name"] == expected_operator_group
+
+    @pytest.mark.parametrize(
         ("role_name", "expected_type"),
         [
             ("ocp_small", TemplateTypeEnum.cluster),

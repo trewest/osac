@@ -84,7 +84,20 @@
         that:
           - osac_addon_operator_templates is defined
           - osac_addon_operator_templates | length >= 1
-          - osac_addon_operator_templates | map(attribute='id') | list is superset(['osac.templates.cert_manager'])
+          - osac_addon_operator_templates | map(attribute='id') | list is superset([
+              'osac.templates.cert_manager',
+              'osac.templates.openshift_ai',
+              'osac.templates.amd_gpu',
+              'osac.templates.authorino',
+              'osac.templates.nvidia_gpu',
+              'osac.templates.odf',
+              'osac.templates.pipelines',
+              'osac.templates.serverless',
+              'osac.templates.servicemesh',
+              'osac.templates.node_feature_discovery',
+              'osac.templates.kmm',
+              'osac.templates.lso'
+            ])
           - osac_addon_operator_templates[0].min_ocp_version is defined
           - osac_addon_operator_templates[0].dependencies is defined
         fail_msg: >-

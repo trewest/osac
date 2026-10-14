@@ -57,6 +57,14 @@
         namespace: openshift-operators
       register: addon_operator_subscription
 
+    - name: Read cert-manager ClusterServiceVersion
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        name: "{{ addon_operator_subscription.resources[0].status.currentCSV }}"
+        namespace: openshift-operators
+      register: addon_operator_csv
+
     - name: Verify the one-operator launch contract
       ansible.builtin.assert:
         that:
@@ -69,7 +77,9 @@
           - addon_operator_subscription.resources[0].spec.installPlanApproval == "Automatic"
           - addon_operator_subscription.resources[0].spec.name == "cert-manager"
           - addon_operator_subscription.resources[0].spec.source == "community-operators"
-          - addon_operator_subscription.resources[0].spec.sourceNamespace == "openshift-marketplace"
+          - addon_operator_subscription.resources[0].status.currentCSV is defined
+          - addon_operator_csv.resources | length == 1
+          - addon_operator_csv.resources[0].status.phase == "Succeeded"
         fail_msg: "The add-on operator playbook did not install the expected cert-manager Subscription"
 
     - name: Run the playbook for each expected failure case

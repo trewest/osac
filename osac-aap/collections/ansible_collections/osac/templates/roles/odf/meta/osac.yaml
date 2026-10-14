@@ -1,0 +1,17 @@
+---
+name: odf
+title: OpenShift Data Foundation Operator
+description: >
+  Installs the OpenShift Data Foundation Operator.
+template_type: addon_operator
+min_ocp_version: ""
+max_ocp_version: ""
+exclusions: []
+dependencies:
+  - lso
+package_name: odf-operator
+channel: stable
+catalog_source: redhat-operators
+catalog_source_namespace: openshift-marketplace
+subscription_namespace: openshift-storage
+operator_group_name: openshift-storage-operatorgroup
