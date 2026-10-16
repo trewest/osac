@@ -28,6 +28,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
+	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
 
@@ -44,8 +45,9 @@ var _ privatev1.AddOnOperatorsServer = (*PrivateAddOnOperatorsServer)(nil)
 
 type PrivateAddOnOperatorsServer struct {
 	privatev1.UnimplementedAddOnOperatorsServer
-	defaultPublished bool
-	generic          *GenericServer[*privatev1.AddOnOperator]
+	defaultPublished          bool
+	generic                   *GenericServer[*privatev1.AddOnOperator]
+	publishedOperatorResolver *addOnOperatorResourceResolver
 }
 
 func NewPrivateAddOnOperatorsServer() *PrivateAddOnOperatorsServerBuilder {
@@ -115,9 +117,18 @@ func (b *PrivateAddOnOperatorsServerBuilder) Build() (result *PrivateAddOnOperat
 	if err != nil {
 		return
 	}
+	addOnOperatorsDao, err := dao.NewGenericDAO[*privatev1.AddOnOperator]().
+		SetLogger(b.logger).
+		SetTenancyLogic(b.tenancyLogic).
+		SetMetricsRegisterer(b.metricsRegisterer).
+		Build()
+	if err != nil {
+		return
+	}
 	result = &PrivateAddOnOperatorsServer{
-		defaultPublished: defaultPublished,
-		generic:          generic,
+		defaultPublished:          defaultPublished,
+		generic:                   generic,
+		publishedOperatorResolver: newPublishedScopedAddOnOperatorResourceResolver(addOnOperatorsDao),
 	}
 	return
 }
@@ -148,6 +159,12 @@ func (s *PrivateAddOnOperatorsServer) Create(ctx context.Context,
 		}
 	}
 	err = s.generic.Create(ctx, request, &response)
+	if err != nil {
+		return
+	}
+	if !isDryRun(ctx) && response.GetObject().GetPublished() {
+		err = s.validateAndPersistPublishedGraph(ctx, response.GetObject())
+	}
 	return
 }
 
@@ -185,6 +202,14 @@ func (s *PrivateAddOnOperatorsServer) Update(ctx context.Context,
 		}
 	}
 	err = s.generic.Update(ctx, request, &response)
+	if err != nil {
+		return
+	}
+	dependenciesChanged := request.GetUpdateMask() == nil ||
+		updateIncludesField(request.GetUpdateMask(), "dependencies", "published")
+	if !isDryRun(ctx) && response.GetObject().GetPublished() && dependenciesChanged {
+		err = s.validateAndPersistPublishedGraph(ctx, response.GetObject())
+	}
 	return
 }
 

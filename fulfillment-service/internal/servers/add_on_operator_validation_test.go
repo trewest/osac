@@ -51,7 +51,7 @@ var _ = Describe("Add-on operator graph", func() {
 
 		Expect(err).ToNot(HaveOccurred())
 		Expect(selected).To(HaveLen(4))
-		Expect(order).To(Equal([]string{"shared", "left", "right", "root"}))
+		Expect(order).To(Equal([]string{"left", "right", "root", "shared"}))
 		Expect(fields[root.GetId()]).To(Equal("spec.add_on_operators[0]"))
 	})
 

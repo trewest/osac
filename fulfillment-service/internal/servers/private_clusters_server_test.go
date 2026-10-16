@@ -86,8 +86,15 @@ func seedAddOnOperatorObject(ctx context.Context, object *privatev1.AddOnOperato
 		SetTenancyLogic(tenancy).
 		Build()
 	Expect(err).ToNot(HaveOccurred())
-	_, err = operatorDao.Create().SetObject(object).Do(ctx)
+	response, err := operatorDao.Create().SetObject(object).Do(ctx)
 	Expect(err).ToNot(HaveOccurred())
+	if response.GetObject().GetPublished() {
+		dependencyIDs := make([]string, 0, len(response.GetObject().GetDependencies()))
+		for _, dependency := range response.GetObject().GetDependencies() {
+			dependencyIDs = append(dependencyIDs, dependency.GetId())
+		}
+		Expect(replaceAddOnOperatorDependencies(ctx, response.GetObject().GetId(), dependencyIDs)).To(Succeed())
+	}
 }
 
 type clusterCreator interface {
@@ -812,6 +819,58 @@ var _ = Describe("Private clusters server", func() {
 			Expect(ids).To(ConsistOf(first.GetId(), second.GetId(), dependency.GetId()))
 		})
 
+		It("bounds recursive dependency expansion", func() {
+			root := newTestAddOnOperator("operator-expansion-limit-root", "operator-expansion-limit-root", true)
+			seedAddOnOperatorObject(ctx, root)
+
+			dependencyIDs := make([]string, 0, maxClusterAddOnOperators)
+			for i := range maxClusterAddOnOperators {
+				dependencyID := fmt.Sprintf("operator-expansion-limit-dependency-%d", i)
+				seedAddOnOperatorObject(ctx, newTestAddOnOperator(dependencyID, dependencyID, true))
+				dependencyIDs = append(dependencyIDs, dependencyID)
+			}
+			Expect(replaceAddOnOperatorDependencies(ctx, root.GetId(), dependencyIDs)).To(Succeed())
+
+			_, err := resolveAddOnOperatorDependencyClosure(ctx, []string{root.GetId()})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("maximum of 32 operators"))
+		})
+
+		It("keeps existing cluster snapshots when dependency edges change", func() {
+			first := newTestAddOnOperator("operator-snapshot-first", "operator-snapshot-first", true)
+			second := newTestAddOnOperator("operator-snapshot-second", "operator-snapshot-second", true)
+			root := newTestAddOnOperator("operator-snapshot-root", "operator-snapshot-root", true)
+			root.SetDependencies([]*privatev1.AddOnOperatorLocalReference{
+				privatev1.AddOnOperatorLocalReference_builder{Id: first.GetId()}.Build(),
+			})
+			seedAddOnOperatorObject(ctx, first)
+			seedAddOnOperatorObject(ctx, second)
+			seedAddOnOperatorObject(ctx, root)
+
+			firstCluster, err := createClusterWithAddOnOperators(ctx, server, []*privatev1.AddOnOperatorReference{
+				privatev1.AddOnOperatorReference_builder{Id: root.GetId()}.Build(),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(replaceAddOnOperatorDependencies(ctx, root.GetId(), []string{second.GetId()})).To(Succeed())
+
+			secondCluster, err := createClusterWithAddOnOperators(ctx, server, []*privatev1.AddOnOperatorReference{
+				privatev1.AddOnOperatorReference_builder{Id: root.GetId()}.Build(),
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			firstIDs := make([]string, 0, len(firstCluster.GetSpec().GetAddOnOperators()))
+			for _, operator := range firstCluster.GetSpec().GetAddOnOperators() {
+				firstIDs = append(firstIDs, operator.GetId())
+			}
+			secondIDs := make([]string, 0, len(secondCluster.GetSpec().GetAddOnOperators()))
+			for _, operator := range secondCluster.GetSpec().GetAddOnOperators() {
+				secondIDs = append(secondIDs, operator.GetId())
+			}
+			Expect(firstIDs).To(ConsistOf(root.GetId(), first.GetId()))
+			Expect(secondIDs).To(ConsistOf(root.GetId(), second.GetId()))
+		})
+
 		It("rejects circular dependencies", func() {
 			first := newTestAddOnOperator("operator-cycle-a", "operator-cycle-a", true)
 			first.SetDependencies([]*privatev1.AddOnOperatorLocalReference{
@@ -821,14 +880,19 @@ var _ = Describe("Private clusters server", func() {
 			second.SetDependencies([]*privatev1.AddOnOperatorLocalReference{
 				privatev1.AddOnOperatorLocalReference_builder{Id: first.GetId()}.Build(),
 			})
-			seedAddOnOperatorObject(ctx, first)
-			seedAddOnOperatorObject(ctx, second)
+			firstStored := proto.Clone(first).(*privatev1.AddOnOperator)
+			firstStored.SetDependencies(nil)
+			seedAddOnOperatorObject(ctx, firstStored)
+			secondStored := proto.Clone(second).(*privatev1.AddOnOperator)
+			secondStored.SetDependencies(nil)
+			seedAddOnOperatorObject(ctx, secondStored)
+			Expect(replaceAddOnOperatorDependencies(ctx, first.GetId(), []string{second.GetId()})).To(Succeed())
+			Expect(replaceAddOnOperatorDependencies(ctx, second.GetId(), []string{first.GetId()})).To(Succeed())
 
 			_, err := createClusterWithAddOnOperators(ctx, server, []*privatev1.AddOnOperatorReference{
 				privatev1.AddOnOperatorReference_builder{Id: first.GetId()}.Build(),
 			})
 			Expect(err).To(HaveOccurred())
-			expectAddOnOperatorFieldViolation(err, "spec.add_on_operators[0]")
 			Expect(grpcstatus.Convert(err).Message()).To(ContainSubstring("cycle"))
 		})
 

@@ -16,6 +16,7 @@ package servers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
@@ -224,12 +225,52 @@ func (s *PrivateClustersServer) resolveAndExpandAddOnOperators(
 	cluster *privatev1.Cluster,
 	requested []*privatev1.AddOnOperatorReference,
 ) (map[string]*privatev1.AddOnOperator, map[string]string, []string, error) {
+	if len(requested) == 0 {
+		return nil, nil, nil, nil
+	}
+
 	resolver := &addOnOperatorReferenceResolver{
 		resource: s.addOnOperators,
 		cache:    make(map[addOnOperatorReferenceCacheKey]*privatev1.AddOnOperator),
 	}
-	graph := newAddOnOperatorGraph(resolver.resolve)
-	return graph.resolveAndExpand(ctx, cluster.GetMetadata(), requested)
+	selected := make(map[string]*privatev1.AddOnOperator)
+	selectedFields := make(map[string]string)
+	rootIDs := make([]string, 0, len(requested))
+	rootFields := make(map[string]string)
+	for index, reference := range requested {
+		field := fmt.Sprintf("spec.add_on_operators[%d]", index)
+		operator, err := resolver.resolve(ctx, reference, cluster.GetMetadata(), field)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rootIDs = append(rootIDs, operator.GetId())
+		rootFields[operator.GetId()] = field
+	}
+
+	operatorIDs, err := resolveAddOnOperatorDependencyClosure(ctx, rootIDs)
+	if err != nil {
+		return nil, nil, nil, addOnOperatorFieldError("spec.add_on_operators", err.Error())
+	}
+	for _, operatorID := range operatorIDs {
+		operator, resolveErr := resolver.resolve(ctx,
+			privatev1.AddOnOperatorReference_builder{Id: operatorID}.Build(),
+			cluster.GetMetadata(), "spec.add_on_operators")
+		if resolveErr != nil {
+			return nil, nil, nil, resolveErr
+		}
+		selected[operatorID] = operator
+		selectedFields[operatorID] = "spec.add_on_operators"
+	}
+	for operatorID, field := range rootFields {
+		selectedFields[operatorID] = field
+	}
+
+	selectedOrder := make([]string, 0, len(selected))
+	for operatorID := range selected {
+		selectedOrder = append(selectedOrder, operatorID)
+	}
+	slices.Sort(selectedOrder)
+	return selected, selectedFields, selectedOrder, nil
 }
 
 type addOnOperatorReferenceResolverFunc func(
@@ -243,7 +284,6 @@ type addOnOperatorGraph struct {
 	resolveReference  addOnOperatorReferenceResolverFunc
 	selected          map[string]*privatev1.AddOnOperator
 	selectedFields    map[string]string
-	selectedOrder     []string
 	visiting          map[string]int
 	stack             []string
 	relationshipEdges int
@@ -264,8 +304,6 @@ func (g *addOnOperatorGraph) resolveAndExpand(
 	g.selected = make(map[string]*privatev1.AddOnOperator)
 	// selectedFields preserves the originating request field for validation errors.
 	g.selectedFields = make(map[string]string)
-	// selectedOrder is dependency-first because operators are appended after their dependencies.
-	g.selectedOrder = make([]string, 0, len(requested))
 	// visiting and stack track the active DFS path used to report dependency cycles.
 	g.visiting = make(map[string]int)
 	g.stack = make([]string, 0, len(requested))
@@ -282,7 +320,12 @@ func (g *addOnOperatorGraph) resolveAndExpand(
 			return nil, nil, nil, err
 		}
 	}
-	return g.selected, g.selectedFields, g.selectedOrder, nil
+	selectedOrder := make([]string, 0, len(g.selected))
+	for operatorID := range g.selected {
+		selectedOrder = append(selectedOrder, operatorID)
+	}
+	slices.Sort(selectedOrder)
+	return g.selected, g.selectedFields, selectedOrder, nil
 }
 
 func (g *addOnOperatorGraph) visit(
@@ -312,7 +355,6 @@ func (g *addOnOperatorGraph) visit(
 		g.stack = g.stack[:len(g.stack)-1]
 	}()
 
-	// Post-order DFS selects dependencies before their parent operator.
 	for _, dependency := range operator.GetDependencies() {
 		g.relationshipEdges++
 		if g.relationshipEdges > maxAddOnOperatorRelationshipEdges {
@@ -330,7 +372,6 @@ func (g *addOnOperatorGraph) visit(
 
 	g.selected[operatorID] = operator
 	g.selectedFields[operatorID] = field
-	g.selectedOrder = append(g.selectedOrder, operatorID)
 	return nil
 }
 
