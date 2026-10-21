@@ -39,9 +39,10 @@ installed Agents, and per-NodeSet NodePool isolation before deleting; it uses th
 source-pinned environment prerequisites as the focused lifecycle. Run it with
 `uv run pytest -n 0 tests/e2e/caas/regression/test_cluster_node_sets.py::test_cluster_create_with_two_node_sets`.
 CaaS sanity contains only the single-nodepool lifecycle and the fast deletion
-feedback test. Two-node-set isolation and explicit/invalid version cases belong
-in CaaS regression; version cases are consolidated in
-`regression/test_cluster_version.py` rather than duplicated in sanity.
+feedback test. Two-node-set isolation and explicit version reconciliation belong
+in CaaS regression; invalid-version API validation belongs in the Fulfillment
+integration suite. The deployed explicit-version case remains in
+`regression/test_cluster_version.py` rather than being duplicated in sanity.
 Other CaaS scenarios still using `wait_for_cluster_deletion` do not establish
 that boundary. Both scenarios verify the API worker BMI's tenant, cluster-order
 label and owner-reference annotation, and the Kubernetes CR's tenant annotation
