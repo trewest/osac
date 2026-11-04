@@ -16,6 +16,13 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.caas.add_on_operators import (
+    _assert_subscriptions_and_csvs,
+    _ensure_published_operators,
+    _restore_operator_publication,
+    _wait_for_api_operators_installed,
+    _wait_for_hosted_cluster_references,
+)
 from tests.e2e.caas.deletion_diagnostics import snapshot_cluster_deletion
 from tests.e2e.core.fulfillment_trust import assert_cluster_trust, assert_management_tls
 from tests.e2e.core.grpc_client import PRIVATE_API, GRPCClient
@@ -693,37 +700,44 @@ def test_cluster_create(
     releaseImage propagation to the HostedCluster, control-plane metering
     heartbeats, worker scale-up, and deletion."""
 
-    worker_instance_type_id = private_grpc.ensure_bare_metal_instance_type(name="ci-worker-bm")
-    logger.info("CaaS: ensuring DiskImage and ClusterVersion")
-    disk_image_id = private_grpc.ensure_disk_image(name="rhcos-4-22", source_ref=RHCOS_IMAGE)
-    version = private_grpc.ensure_cluster_version(
-        version="4.22.0-rhcos", image=TEST_RELEASE_IMAGE, disk_image=disk_image_id
+    operator_specs, publication_states, operator_ids = _ensure_published_operators(
+        cli, private_grpc, ("cert-manager", "serverless")
     )
-    logger.info("CaaS: ClusterVersion available")
-    ssh_public_key = Path(ssh_public_key_path).read_text().strip()
-    logger.info("CaaS: creating ClusterCatalogItem")
-    # The shared offering locks every tenant-independent input (version, node sets, SSH
-    # key); the pull secret stays caller-supplied because a shared catalog item cannot
-    # fix a tenant-local secret for every tenant.
-    catalog_item_id = private_grpc.create_cluster_catalog_item(
-        name=unique_name("e2e-caas-catalog"),
-        template=cluster_template,
-        fields={
-            "version": {"locked": {"id": version["id"]}},
-            "ssh_public_key": {"locked": ssh_public_key},
-            "pull_secret_secret": {"editable": {}},
-            "node_sets": {
-                "locked": {
-                    "items": {"workers": {"size": 1, "baremetal_instance_type": {"id": worker_instance_type_id}}}
-                }
-            },
-        },
-        api=PRIVATE_API,
-    )
-    logger.info("CaaS: ClusterCatalogItem created")
-    name = unique_name("e2e-cluster")
+    catalog_item_id = ""
     uuid = ""
     try:
+        worker_instance_type_id = private_grpc.ensure_bare_metal_instance_type(name="ci-worker-bm")
+        logger.info("CaaS: ensuring DiskImage and ClusterVersion")
+        disk_image_id = private_grpc.ensure_disk_image(name="rhcos-4-22", source_ref=RHCOS_IMAGE)
+        version = private_grpc.ensure_cluster_version(
+            version="4.22.0-rhcos", image=TEST_RELEASE_IMAGE, disk_image=disk_image_id
+        )
+        logger.info("CaaS: ClusterVersion available")
+        ssh_public_key = Path(ssh_public_key_path).read_text().strip()
+        logger.info("CaaS: creating ClusterCatalogItem")
+        # The shared offering locks every tenant-independent input (version, node sets, SSH
+        # key, and add-on operators); the pull secret stays caller-supplied because a
+        # shared catalog item cannot fix a tenant-local secret for every tenant.
+        catalog_item_id = private_grpc.create_cluster_catalog_item(
+            name=unique_name("e2e-caas-catalog"),
+            template=cluster_template,
+            fields={
+                "version": {"locked": {"id": version["id"]}},
+                "ssh_public_key": {"locked": ssh_public_key},
+                "pull_secret_secret": {"editable": {}},
+                "add_on_operators": {
+                    "locked": {"items": [{"id": operator_id, "shared": True} for operator_id in operator_ids]}
+                },
+                "node_sets": {
+                    "locked": {
+                        "items": {"workers": {"size": 1, "baremetal_instance_type": {"id": worker_instance_type_id}}}
+                    }
+                },
+            },
+            api=PRIVATE_API,
+        )
+        logger.info("CaaS: ClusterCatalogItem created")
+        name = unique_name("e2e-cluster")
         logger.info("CaaS: creating cluster from catalog item")
         uuid = cli.create_cluster_with_catalog_item(
             catalog_item=catalog_item_id, name=name, pull_secret=pull_secret_name
@@ -746,6 +760,31 @@ def test_cluster_create(
         _assert_cluster_metering(metering=metering, uuid=uuid, cluster_template=cluster_template)
         _assert_worker_metering(metering=metering, uuid=uuid, cluster=cluster)
 
+        wait_for_cluster_order_condition(k8s=k8s_hub_client, name=cluster.co_name, condition_type="AddOnOperatorsReady")
+        hosted_cluster_name, hosted_cluster_namespace = _wait_for_hosted_cluster_references(
+            k8s=k8s_hub_client, cluster_order_name=cluster.co_name
+        )
+        workload_kubeconfig = wait_for_hosted_cluster_kubeconfig(
+            k8s=k8s_hub_client,
+            hosted_cluster_namespace=hosted_cluster_namespace,
+            hosted_cluster_name=hosted_cluster_name,
+        )
+        with tempfile.NamedTemporaryFile(prefix="osac-workload-", suffix=".kubeconfig") as kubeconfig_file:
+            kubeconfig_file.write(workload_kubeconfig)
+            kubeconfig_file.flush()
+            workload_k8s = K8sClient(
+                namespace=hosted_cluster_namespace, kubeconfig=kubeconfig_file.name, as_system_admin=False
+            )
+            _assert_subscriptions_and_csvs(
+                workload_k8s=workload_k8s, hosted_cluster_name=hosted_cluster_name, expected=operator_specs
+            )
+        _wait_for_api_operators_installed(
+            client=grpc,
+            cluster_id=uuid,
+            identity="CaaS catalog cluster",
+            operator_names=(spec.name for spec in operator_specs),
+        )
+
         scaled_size = cluster.original_size + 1
         cli.scale_cluster(uuid=uuid, node_set=cluster.worker_node_set, size=scaled_size)
 
@@ -757,8 +796,10 @@ def test_cluster_create(
         if uuid:
             with contextlib.suppress(subprocess.SubprocessError):
                 cli.delete_cluster(uuid=uuid)
-        with contextlib.suppress(subprocess.SubprocessError):
-            private_grpc.delete_cluster_catalog_item(catalog_item_id=catalog_item_id, api=PRIVATE_API)
+        if catalog_item_id:
+            with contextlib.suppress(subprocess.SubprocessError):
+                private_grpc.delete_cluster_catalog_item(catalog_item_id=catalog_item_id, api=PRIVATE_API)
+        _restore_operator_publication(private_grpc, publication_states)
 
 
 def _assert_two_node_set_requests(
